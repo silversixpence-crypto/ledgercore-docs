@@ -1,0 +1,942 @@
+---
+title: Ethereum Contract Recognition using LLMs
+description: 'LLM Experiment'
+authors: [jacques, ebrahim]
+tags: [contracts, ethereum, llms]
+---
+
+<Info>
+  **Ethereum**:
+  This article investigates the LLMs capability to recognize Ethereum contracts, and interpret what is in it.
+</Info>
+
+## Hello Ethereum Contract
+
+The first contract I will test is at this address:
+
+```csv
+0xa3483b08C8A0F33eB07afF3A66fbcaf5C9018CDC
+```
+
+The contract is a simple <code>Hello Ethereum</code> contract.
+
+```solidity
+/**
+ *Submitted for verification at Etherscan.io on 2017-10-27
+*/
+
+contract testContract {
+   function go() constant returns (string) {
+      return "Hello Ethereum!";
+   }
+}
+```
+
+This is the input and result of the first query I asked ChatGPT 5:
+
+### Input
+
+```
+Here is the bytecode for an Ethereum contract.
+Its a small contract and very early on in the blockchain.
+Here is the bytecode:
+0x60606040526000357c0100000000000000000000000000000000000000000000000000000000900480630f59f83a1461003957610037565b005b6100446004506100b2565b60405180806020018281038252838181518152602001915080519060200190808383829060006004602084601f0104600302600f01f150905090810190601f1680156100a45780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b6020604051908101604052806000815260200150604060405190810160405280600f81526020017f48656c6c6f20457468657265756d2100000000000000000000000000000000008152602001509050610107565b9056.
+Can you interpret the bytecode and explain what it means?
+```
+
+### Output
+
+Fun one! This is a tiny “Hello Ethereum!” contract compiled by an old Solidity (≈0.4.x). Here’s what the runtime bytecode does, in plain English:
+
+#### What functions it has
+
+- It implements exactly **one** public function with the **4-byte selector `0x0f59f83a`**.
+- That function is **pure/view** (no storage reads/writes, no logs) and **returns a single `string`**.
+- Any other selector (or no selector) falls through the dispatcher and does nothing (old compilers often just `STOP`).
+
+#### What it returns
+
+You can see the ASCII string embedded near the end:
+
+```
+... 600f8152 602001 7f48656c6c6f20457468657265756d210000000000000000000000000000000000 8152 602001 5090 ...
+                ^^^^ length = 0x0f = 15
+    "48656c6c6f20457468657265756d21" = "Hello Ethereum!"
+```
+
+So the function returns the exact string:
+
+```
+"Hello Ethereum!"
+```
+
+#### How the dispatcher works (first ~40 bytes)
+
+- `6060604052` → set the free memory pointer to `0x60` (classic 0.4.x prelude).
+- `600035` → `calldataload(0)` then mask/shift to extract the first 4 bytes (the function selector).
+- `63 0f59f83a 14 ... 57` → compare selector to `0x0f59f83a`; if equal, `JUMPI` to the function body; else jump to the fallback (which effectively does nothing).
+
+#### How the return value is ABI-encoded
+
+The body builds a standard ABI-encoded **dynamic string** result in memory:
+
+1. Reserve memory (`MLOAD 0x40` / manage free pointer).
+2. Write the **offset** (0x20) for the first (and only) return value.
+3. At `retptr + 0x20`, write the **string length** (`0x0f`).
+4. Immediately after, write the **15 bytes** `48656c6c6f20457468657265756d21` (“Hello Ethereum!”) and pad to 32 bytes.
+5. `RETURN` the whole blob.
+
+If you called it off-chain, you’d get back ABI like:
+
+```
+0x
+0000000000000000000000000000000000000000000000000000000000000020  // offset
+000000000000000000000000000000000000000000000000000000000000000f  // length = 15
+48656c6c6f20457468657265756d210000000000000000000000000000000000  // "Hello Ethereum!" + padding
+```
+
+#### Likely Solidity it came from (approx.)
+
+```solidity
+pragma solidity ^0.4.0;
+
+contract HelloEthereum {
+    function /* unknown_0f59f83a */() public pure returns (string) {
+        return "Hello Ethereum!";
+    }
+}
+```
+
+> The selector `0x0f59f83a` identifies the function name (e.g., `hello()`, `say()`, etc.), but bytecode alone doesn’t reveal the **name**—only the signature hash. We can map it if you tell me the intended name, or I can try a few guesses you care about.
+
+#### How to call it (ethers.js)
+
+```js
+const abi = [
+  {
+    constant: true,
+    inputs: [],
+    name: "unknown_0f59f83a",
+    outputs: [{ name: "", type: "string" }],
+    payable: false,
+    stateMutability: "pure",
+    type: "function",
+  },
+];
+
+const c = new ethers.Contract(address, abi, provider);
+console.log(await c.unknown_0f59f83a()); // "Hello Ethereum!"
+```
+
+If you want, I can try to resolve `0x0f59f83a` to a likely function name (e.g., `hello()`, `greet()`, `sayHello()`), or generate a full minimal ABI for you.
+
+### Analysis
+
+ChatGPT easily interpreted the bytecode.
+
+#### Contract code
+
+This is the code it created:
+
+```solidity
+pragma solidity ^0.4.0;
+
+contract HelloEthereum {
+    function /* unknown_0f59f83a */() public pure returns (string) {
+        return "Hello Ethereum!";
+    }
+}
+```
+
+vs. the actual contract solidity uploaded to Etherscan:
+
+```solidity
+/**
+ *Submitted for verification at Etherscan.io on 2017-10-27
+*/
+
+contract testContract {
+   function go() constant returns (string) {
+      return "Hello Ethereum!";
+   }
+}
+```
+
+#### ABI
+
+This is the ABI array that ChatGPT produced:
+
+```json
+[
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "unknown_0f59f83a",
+    "outputs": [{ "name": "", "type": "string" }],
+    "payable": false,
+    "stateMutability": "pure",
+    "type": "function"
+  }
+]
+```
+
+vs. the actual ABI
+
+```json
+[
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "go",
+    "outputs": [{ "name": "", "type": "string" }],
+    "type": "function"
+  }
+]
+```
+
+#### Function name
+
+ChatGPT guessed that the function could be `hello()`, `greet()`, `sayHello()`, but the correct function name is `go()`.
+There is no way for the AI to know what the correct function name is, at least, by just looking at the bytecode.
+
+There is, however, a way to get the correct function name by looking it up on the web. Here is the result for the matching signature (`0f59f83a`) when searched on `https://www.4byte.directory/`
+
+| ID    | Text Signature | Bytes Signature |
+| ----- | -------------- | --------------- |
+| 87904 | go()           | 0x0f59f83a      |
+
+#### Disassembly
+
+ChatGPT was also able to produce the disassembly:
+
+Disassembly of provided runtime bytecode (266 bytes):
+
+```asm
+0000: PUSH1      0x60
+0002: PUSH1      0x40
+0004: MSTORE
+0005: PUSH1      0x00
+0007: CALLDATALOAD
+0008: PUSH29     0x0100000000000000000000000000000000000000000000000000000000
+0026: SWAP1
+0027: DIV
+0028: DUP1
+0029: PUSH4      0x0f59f83a
+002e: EQ
+002f: PUSH2      0x0039
+0032: JUMPI
+0033: PUSH2      0x0037
+0036: JUMP
+0037: JUMPDEST
+0038: STOP
+0039: JUMPDEST
+003a: PUSH2      0x0044
+003d: PUSH1      0x04
+003f: POP
+0040: PUSH2      0x00b2
+0043: JUMP
+0044: JUMPDEST
+0045: PUSH1      0x40
+0047: MLOAD
+0048: DUP1
+0049: DUP1
+004a: PUSH1      0x20
+004c: ADD
+004d: DUP3
+004e: DUP2
+004f: SUB
+0050: DUP3
+0051: MSTORE
+0052: DUP4
+0053: DUP2
+0054: DUP2
+0055: MLOAD
+0056: DUP2
+0057: MSTORE
+0058: PUSH1      0x20
+005a: ADD
+005b: SWAP2
+005c: POP
+005d: DUP1
+005e: MLOAD
+005f: SWAP1
+0060: PUSH1      0x20
+0062: ADD
+0063: SWAP1
+0064: DUP1
+0065: DUP4
+0066: DUP4
+0067: DUP3
+0068: SWAP1
+0069: PUSH1      0x00
+006b: PUSH1      0x04
+006d: PUSH1      0x20
+006f: DUP5
+0070: PUSH1      0x1f
+0072: ADD
+0073: DIV
+0074: PUSH1      0x03
+0076: MUL
+0077: PUSH1      0x0f
+0079: ADD
+007a: CALL
+007b: POP
+007c: SWAP1
+007d: POP
+007e: SWAP1
+007f: DUP2
+0080: ADD
+0081: SWAP1
+0082: PUSH1      0x1f
+0084: AND
+0085: DUP1
+0086: ISZERO
+0087: PUSH2      0x00a4
+008a: JUMPI
+008b: DUP1
+008c: DUP3
+008d: SUB
+008e: DUP1
+008f: MLOAD
+0090: PUSH1      0x01
+0092: DUP4
+0093: PUSH1      0x20
+0095: SUB
+0096: PUSH2      0x0100
+0099: EXP
+009a: SUB
+009b: NOT
+009c: AND
+009d: DUP2
+009e: MSTORE
+009f: PUSH1      0x20
+00a1: ADD
+00a2: SWAP2
+00a3: POP
+00a4: JUMPDEST
+00a5: POP
+00a6: SWAP3
+00a7: POP
+00a8: POP
+00a9: POP
+00aa: PUSH1      0x40
+00ac: MLOAD
+00ad: DUP1
+00ae: SWAP2
+00af: SUB
+00b0: SWAP1
+00b1: RETURN
+00b2: JUMPDEST
+00b3: PUSH1      0x20
+00b5: PUSH1      0x40
+00b7: MLOAD
+00b8: SWAP1
+00b9: DUP2
+00ba: ADD
+00bb: PUSH1      0x40
+00bd: MSTORE
+00be: DUP1
+00bf: PUSH1      0x00
+00c1: DUP2
+00c2: MSTORE
+00c3: PUSH1      0x20
+00c5: ADD
+00c6: POP
+00c7: PUSH1      0x40
+00c9: PUSH1      0x40
+00cb: MLOAD
+00cc: SWAP1
+00cd: DUP2
+00ce: ADD
+00cf: PUSH1      0x40
+00d1: MSTORE
+00d2: DUP1
+00d3: PUSH1      0x0f
+00d5: DUP2
+00d6: MSTORE
+00d7: PUSH1      0x20
+00d9: ADD
+00da: PUSH32     0x48656c6c6f20457468657265756d210000000000000000000000000000000000
+00fb: DUP2
+00fc: MSTORE
+00fd: PUSH1      0x20
+00ff: ADD
+0100: POP
+0101: SWAP1
+0102: POP
+0103: PUSH2      0x0107
+0106: JUMP
+0107: JUMPDEST
+0108: SWAP1
+0109: JUMP
+```
+
+## Chainlink Contract
+
+Next I feed ChatGPT the Chainlink bytecode.
+
+The Chainlink address:
+
+```
+0x514910771AF9Ca656af840dff83E8264EcF986CA
+```
+
+### Input
+
+```
+Here is the bytecode to another contract:
+0x606060405236156100b75763ffffffff7c010000000000000000000000000000000000000000000000000000000060003504166306fdde0381146100bc578063095ea7b31461014757806318160ddd1461017d57806323b872dd146101a2578063313ce567146101de5780634000aea014610207578063661884631461028057806370a08231146102b657806395d89b41146102e7578063a9059cbb14610372578063d73dd623146103a8578063dd62ed3e146103de575b600080fd5b34156100c757600080fd5b6100cf610415565b60405160208082528190810183818151815260200191508051906020019080838360005b8381101561010c5780820151818401525b6020016100f3565b50505050905090810190601f1680156101395780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b341561015257600080fd5b610169600160a060020a036004351660243561044c565b604051901515815260200160405180910390f35b341561018857600080fd5b610190610499565b60405190815260200160405180910390f35b34156101ad57600080fd5b610169600160a060020a03600435811690602435166044356104a9565b604051901515815260200160405180910390f35b34156101e957600080fd5b6101f16104f8565b60405160ff909116815260200160405180910390f35b341561021257600080fd5b61016960048035600160a060020a03169060248035919060649060443590810190830135806020601f820181900481020160405190810160405281815292919060208401838380828437509496506104fd95505050505050565b604051901515815260200160405180910390f35b341561028b57600080fd5b610169600160a060020a036004351660243561054c565b604051901515815260200160405180910390f35b34156102c157600080fd5b610190600160a060020a0360043516610648565b60405190815260200160405180910390f35b34156102f257600080fd5b6100cf610667565b60405160208082528190810183818151815260200191508051906020019080838360005b8381101561010c5780820151818401525b6020016100f3565b50505050905090810190601f1680156101395780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b341561037d57600080fd5b610169600160a060020a036004351660243561069e565b604051901515815260200160405180910390f35b34156103b357600080fd5b610169600160a060020a03600435166024356106eb565b604051901515815260200160405180910390f35b34156103e957600080fd5b610190600160a060020a0360043581169060243516610790565b60405190815260200160405180910390f35b60408051908101604052600f81527f436861696e4c696e6b20546f6b656e0000000000000000000000000000000000602082015281565b600082600160a060020a03811615801590610479575030600160a060020a031681600160a060020a031614155b151561048457600080fd5b61048e84846107bd565b91505b5b5092915050565b6b033b2e3c9fd0803ce800000081565b600082600160a060020a038116158015906104d6575030600160a060020a031681600160a060020a031614155b15156104e157600080fd5b6104ec85858561082a565b91505b5b509392505050565b601281565b600083600160a060020a0381161580159061052a575030600160a060020a031681600160a060020a031614155b151561053557600080fd5b6104ec85858561093c565b91505b5b509392505050565b600160a060020a033381166000908152600260209081526040808320938616835292905290812054808311156105a957600160a060020a0333811660009081526002602090815260408083209388168352929052908120556105e0565b6105b9818463ffffffff610a2316565b600160a060020a033381166000908152600260209081526040808320938916835292905220555b600160a060020a0333811660008181526002602090815260408083209489168084529490915290819020547f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925915190815260200160405180910390a3600191505b5092915050565b600160a060020a0381166000908152600160205260409020545b919050565b60408051908101604052600481527f4c494e4b00000000000000000000000000000000000000000000000000000000602082015281565b600082600160a060020a038116158015906106cb575030600160a060020a031681600160a060020a031614155b15156106d657600080fd5b61048e8484610a3a565b91505b5b5092915050565b600160a060020a033381166000908152600260209081526040808320938616835292905290812054610723908363ffffffff610afa16565b600160a060020a0333811660008181526002602090815260408083209489168084529490915290819020849055919290917f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b92591905190815260200160405180910390a35060015b92915050565b600160a060020a038083166000908152600260209081526040808320938516835292905220545b92915050565b600160a060020a03338116600081815260026020908152604080832094871680845294909152808220859055909291907f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b9259085905190815260200160405180910390a35060015b92915050565b600160a060020a03808416600081815260026020908152604080832033909516835293815283822054928252600190529182205461086e908463ffffffff610a2316565b600160a060020a0380871660009081526001602052604080822093909355908616815220546108a3908463ffffffff610afa16565b600160a060020a0385166000908152600160205260409020556108cc818463ffffffff610a2316565b600160a060020a03808716600081815260026020908152604080832033861684529091529081902093909355908616917fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9086905190815260200160405180910390a3600191505b509392505050565b60006109488484610a3a565b5083600160a060020a031633600160a060020a03167fe19260aff97b920c7df27010903aeb9c8d2be5d310a2c67824cf3f15396e4c16858560405182815260406020820181815290820183818151815260200191508051906020019080838360005b838110156109c35780820151818401525b6020016109aa565b50505050905090810190601f1680156109f05780820380516001836020036101000a031916815260200191505b50935050505060405180910390a3610a0784610b14565b15610a1757610a17848484610b23565b5b5060015b9392505050565b600082821115610a2f57fe5b508082035b92915050565b600160a060020a033316600090815260016020526040812054610a63908363ffffffff610a2316565b600160a060020a033381166000908152600160205260408082209390935590851681522054610a98908363ffffffff610afa16565b600160a060020a0380851660008181526001602052604090819020939093559133909116907fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9085905190815260200160405180910390a35060015b92915050565b600082820183811015610b0957fe5b8091505b5092915050565b6000813b908111905b50919050565b82600160a060020a03811663a4c0ed363385856040518463ffffffff167c01000000000000000000000000000000000000000000000000000000000281526004018084600160a060020a0316600160a060020a0316815260200183815260200180602001828103825283818151815260200191508051906020019080838360005b83811015610bbd5780820151818401525b602001610ba4565b50505050905090810190601f168015610bea5780820380516001836020036101000a031916815260200191505b50945050505050600060405180830381600087803b1515610c0a57600080fd5b6102c65a03f11515610c1b57600080fd5b5050505b505050505600a165627a7a72305820c5f438ff94e5ddaf2058efa0019e246c636c37a622e04bb67827c7374acad8d60029.
+Can you disassemble the bytecode and tell me what it does?
+```
+
+### Output
+
+Short answer: this is the classic **Chainlink (LINK) ERC-20/ERC-677 token** runtime + constructor bytecode. It implements ERC-20 plus `increaseApproval`, `decreaseApproval`, and **ERC-677 `transferAndCall`** with the `onTokenTransfer` hook. Name and symbol are embedded: **“ChainLink Token”** and **“LINK”**. Decimals = **18**. Total supply constant = **1e27** (1,000,000,000 × 10¹⁸).
+
+##### What it does (high level)
+
+- **ERC-20 core**
+
+  - `name()` → “ChainLink Token”
+  - `symbol()` → “LINK”
+  - `decimals()` → `18`
+  - `totalSupply()` → `10^27`
+  - `balanceOf(address)`
+  - `transfer(address,uint256)`
+  - `transferFrom(address,address,uint256)`
+  - `approve(address,uint256)`
+  - `allowance(address,address)`
+
+- **Approval helpers**
+
+  - `increaseApproval(address,uint256)`
+  - `decreaseApproval(address,uint256)`
+
+- **ERC-677 extension**
+
+  - `transferAndCall(address,uint256,bytes)` — after transferring, it calls
+    `onTokenTransfer(address,uint256,bytes)` on the receiver (selector **`0xa4c0ed36`**).
+
+- **Events**
+
+  - `Transfer(address,address,uint256)` — topic **`0xddf252ad…`**
+  - `Approval(address,address,uint256)` — topic **`0x8c5be1e5…`**
+  - There’s also an ownership/administrative event with topic **`0xe19260af…`** used in setup.
+
+##### Function selectors seen in the dispatcher
+
+- `06fdde03` → `name()`
+- `095ea7b3` → `approve(address,uint256)`
+- `18160ddd` → `totalSupply()`
+- `23b872dd` → `transferFrom(address,address,uint256)`
+- `313ce567` → `decimals()`
+- `4000aea0` → **`transferAndCall(address,uint256,bytes)`** (ERC-677)
+- `66188463` → `decreaseApproval(address,uint256)`
+- `70a08231` → `balanceOf(address)`
+- `95d89b41` → `symbol()`
+- `a9059cbb` → `transfer(address,uint256)`
+- `d73dd623` → `increaseApproval(address,uint256)`
+- `dd62ed3e` → `allowance(address,address)`
+
+Also present in-call:
+
+- `a4c0ed36` → `onTokenTransfer(address,uint256,bytes)` (receiver hook)
+
+#### Constants & strings embedded in bytecode
+
+- ASCII: **“ChainLink Token”** and **“LINK”** (returned by `name()` and `symbol()`).
+- `0x033b2e3c9fd0803ce8000000` = **10^27** (initial supply).
+- `0x12` (decimal 18) for **`decimals()`**.
+
+##### Constructor behavior (from the creation code)
+
+- Mints/assigns the **entire initial supply (1e27)** to the deployer (`msg.sender`).
+- Emits the initial **Transfer** event from `0x0` to the deployer.
+- Stores name/symbol/decimals as constants.
+
+If you want, I can also produce a **minimal ABI** for direct use with ethers/web3, or extract the exact storage layout (balances, allowances) and show how each function updates it.
+
+### Analysis
+
+#### Disassembly
+
+You can get the complete disassembly generated by ChatGPT [here](/files/erc_token_disassembly.txt).
+
+#### ABI
+
+ChatGPT was able to identify the ABI array correctly.
+
+Here is the result from ChatGPT:
+
+```json
+[
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "name",
+    "outputs": [{ "name": "", "type": "string" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_spender", "type": "address" },
+      { "name": "_value", "type": "uint256" }
+    ],
+    "name": "approve",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "totalSupply",
+    "outputs": [{ "name": "", "type": "uint256" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_from", "type": "address" },
+      { "name": "_to", "type": "address" },
+      { "name": "_value", "type": "uint256" }
+    ],
+    "name": "transferFrom",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "decimals",
+    "outputs": [{ "name": "", "type": "uint8" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_to", "type": "address" },
+      { "name": "_value", "type": "uint256" },
+      { "name": "_data", "type": "bytes" }
+    ],
+    "name": "transferAndCall",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_spender", "type": "address" },
+      { "name": "_subtractedValue", "type": "uint256" }
+    ],
+    "name": "decreaseApproval",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [{ "name": "_owner", "type": "address" }],
+    "name": "balanceOf",
+    "outputs": [{ "name": "balance", "type": "uint256" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "symbol",
+    "outputs": [{ "name": "", "type": "string" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_to", "type": "address" },
+      { "name": "_value", "type": "uint256" }
+    ],
+    "name": "transfer",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_spender", "type": "address" },
+      { "name": "_addedValue", "type": "uint256" }
+    ],
+    "name": "increaseApproval",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [
+      { "name": "_owner", "type": "address" },
+      { "name": "_spender", "type": "address" }
+    ],
+    "name": "allowance",
+    "outputs": [{ "name": "remaining", "type": "uint256" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "name": "from", "type": "address" },
+      { "indexed": true, "name": "to", "type": "address" },
+      { "indexed": false, "name": "value", "type": "uint256" }
+    ],
+    "name": "Transfer",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "name": "owner", "type": "address" },
+      { "indexed": true, "name": "spender", "type": "address" },
+      { "indexed": false, "name": "value", "type": "uint256" }
+    ],
+    "name": "Approval",
+    "type": "event"
+  }
+]
+```
+
+vs. the actual contract ABI:
+
+```json
+[
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "name",
+    "outputs": [{ "name": "", "type": "string" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_spender", "type": "address" },
+      { "name": "_value", "type": "uint256" }
+    ],
+    "name": "approve",
+    "outputs": [{ "name": "", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "totalSupply",
+    "outputs": [{ "name": "", "type": "uint256" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_from", "type": "address" },
+      { "name": "_to", "type": "address" },
+      { "name": "_value", "type": "uint256" }
+    ],
+    "name": "transferFrom",
+    "outputs": [{ "name": "", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "decimals",
+    "outputs": [{ "name": "", "type": "uint8" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_to", "type": "address" },
+      { "name": "_value", "type": "uint256" },
+      { "name": "_data", "type": "bytes" }
+    ],
+    "name": "transferAndCall",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_spender", "type": "address" },
+      { "name": "_subtractedValue", "type": "uint256" }
+    ],
+    "name": "decreaseApproval",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [{ "name": "_owner", "type": "address" }],
+    "name": "balanceOf",
+    "outputs": [{ "name": "balance", "type": "uint256" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "symbol",
+    "outputs": [{ "name": "", "type": "string" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_to", "type": "address" },
+      { "name": "_value", "type": "uint256" }
+    ],
+    "name": "transfer",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "_spender", "type": "address" },
+      { "name": "_addedValue", "type": "uint256" }
+    ],
+    "name": "increaseApproval",
+    "outputs": [{ "name": "success", "type": "bool" }],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [
+      { "name": "_owner", "type": "address" },
+      { "name": "_spender", "type": "address" }
+    ],
+    "name": "allowance",
+    "outputs": [{ "name": "remaining", "type": "uint256" }],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "name": "from", "type": "address" },
+      { "indexed": true, "name": "to", "type": "address" },
+      { "indexed": false, "name": "value", "type": "uint256" },
+      { "indexed": false, "name": "data", "type": "bytes" }
+    ],
+    "name": "Transfer",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "name": "owner", "type": "address" },
+      { "indexed": true, "name": "spender", "type": "address" },
+      { "indexed": false, "name": "value", "type": "uint256" }
+    ],
+    "name": "Approval",
+    "type": "event"
+  }
+]
+```
+
+ChatGPT guessed most of the ABI correctly except for 3 minor differences:
+
+Chat GPT added output names in 2 places:
+
+ChatGPT:
+```
+"outputs": [{ "name": "success", "type": "bool" }],
+```
+
+vs.
+
+Actual:
+```
+"outputs": [{ "name": "", "type": "bool" }],
+```
+
+And, ChatGPT was missing one input for the Transfer function:
+
+ChatGPT:
+```json
+"inputs": [
+  { "indexed": true, "name": "from", "type": "address" },
+  { "indexed": true, "name": "to", "type": "address" },
+  { "indexed": false, "name": "value", "type": "uint256" }
+],
+
+vs.
+
+Actual:
+```json
+"inputs": [
+  { "indexed": true, "name": "from", "type": "address" },
+  { "indexed": true, "name": "to", "type": "address" },
+  { "indexed": false, "name": "value", "type": "uint256" },
+  { "indexed": false, "name": "data", "type": "bytes" }
+]
+```
+
+## The Chainlink `totalSupply` function
+
+I also asked ChatGPT to find the disassembly for the totalSupply function and explain it.
+
+### Input
+
+```
+Can you show me the disassembly that is applicable t the totalSupply function and explain it to me?
+```
+
+### Output
+
+Great pick. In that bytecode, the selector **`0x18160ddd`** routes to the contract’s **`totalSupply()`** handler. This handler doesn’t read storage; it returns a **built-in constant** (LINK has fixed supply). Here’s the relevant disassembly path and what each part means.
+
+# Dispatcher → `totalSupply()` case
+
+When the call data’s first 4 bytes equal `0x18160ddd`, the dispatcher jumps to the `totalSupply` body and later uses a shared “return tail”:
+
+```
+...                  ; selector checks above
+PUSH2 0x0190         ; entry for totalSupply()
+PUSH2 0x0499         ; shared return tail (ABI return helper)
+JUMP                  ; go to function body at 0x0190
+```
+
+# `totalSupply()` body (returns a constant)
+
+You’ll see a constant block used by multiple getters. The one for total supply is:
+
+```
+...
+PUSH11 0x033b2e3c9fd0803ce8000000   ; 10^27 = 1,000,000,000 * 10^18
+DUP2                               ; keep the return-tail address alive
+JUMP                               ; jump into a tiny “return uint256” helper
+JUMPDEST                           ; label (target for the helper)
+```
+
+That **`PUSH11`** immediate `0x033b2e3c9fd0803ce8000000` is exactly **10²⁷** (decimal). So `totalSupply()` is compiled to return a fixed uint256 constant rather than doing `SLOAD`. That matches LINK’s fixed supply design (1e9 LINK with 18 decimals).
+
+# How the return tail works
+
+The jump lands in a small shared snippet that:
+
+1. writes the single `uint256` to memory in ABI format,
+2. computes the length (`32`),
+3. calls `RETURN`.
+
+In effect, the function returns:
+
+```
+0x0000000000000000000000000000000000000000000000000de0b6b3a7640000000000000  (ABI-encoded 10^27)
+```
+
+# Summary
+
+- **Selector:** `0x18160ddd` → `totalSupply()`
+- **Implementation:** returns a **constant** (no storage read).
+- **Value:** **10²⁷** (i.e., `1_000_000_000 * 10^18`), the well-known LINK total supply.
+
+### Analysis
+
+The explanation given by ChatGPT is mostly correct. Althought this comment given in the disassembly above is incorrect:
+
+```
+PUSH2 0x0499         ; shared return tail (ABI return helper)
+```
+
+The `0x0499` is the location of the constant totalSupply value, not the return address for the ABI helper.
+
+Below is the code used by the totalSupply 'function'.
+
+```asm
+017d: JUMPDEST
+017e: CALLVALUE
+017f: ISZERO
+0180: PUSH2      0x0188
+0183: JUMPI
+0184: PUSH1      0x00
+0186: DUP1
+0187: REVERT
+0188: JUMPDEST
+0189: PUSH2      0x0190
+018c: PUSH2      0x0499
+018f: JUMP
+0190: JUMPDEST
+0191: PUSH1      0x40
+0193: MLOAD
+0194: SWAP1
+0195: DUP2
+0196: MSTORE
+0197: PUSH1      0x20
+0199: ADD
+019a: PUSH1      0x40
+019c: MLOAD
+019d: DUP1
+019e: SWAP2
+019f: SUB
+01a0: SWAP1
+01a1: RETURN
+...
+049a: JUMPDEST
+049b: PUSH12     0x033b2e3c9fd0803ce8000000
+04a8: DUP2
+04a9: JUMP
+```
+
+### Conclusion
+
+ChatGPT identified the code correctly.
+
+## Overall Conclusion
+
+AI can be very powerfull when used to explain Ethereum bytecode and disassembly.
